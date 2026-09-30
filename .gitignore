@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+
+# Relay runtime state and logs
+vicon_direction.txt
+vicon_packet_id.txt
+vicon_sync_events.jsonl
+vicon_sync_relay.log
+relay_runtime*.log
+
+# Generated trial sidecars
+*.optigait-sync.json
