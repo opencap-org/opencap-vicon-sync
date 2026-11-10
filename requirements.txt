@@ -1,0 +1,4 @@
+# Optional Bonjour discovery; the relay also supports manual IP connections.
+zeroconf==0.152.1; python_version < "3.11"
+zeroconf==0.154.0; python_version >= "3.11"
+ifaddr==0.2.0

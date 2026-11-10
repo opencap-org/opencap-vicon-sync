@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -84,6 +86,31 @@ class FakeDatagramTransport:
         self.sent.append((payload, destination))
 
 
+class RelayCommandLineTests(unittest.TestCase):
+    def test_startup_requires_an_explicit_portable_pairing_token(self) -> None:
+        script = Path(__file__).with_name("vicon_sync_relay.py")
+        for arguments in ([], ["--token", ""], ["--token", 'bad"token'], ["--token", "two words"]):
+            with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as directory:
+                result = subprocess.run(
+                    [sys.executable, str(script), *arguments], cwd=directory,
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("token", result.stderr)
+
+    def test_phone_control_requires_an_explicit_nexus_adapter_address(self) -> None:
+        script = Path(__file__).with_name("vicon_sync_relay.py")
+        for direction in ("auto", PHONE_CONTROLS_NEXUS):
+            with self.subTest(direction=direction), tempfile.TemporaryDirectory() as directory:
+                result = subprocess.run(
+                    [sys.executable, str(script), "--token", "lab-test-token",
+                     "--direction", direction, "--nexus-root", directory],
+                    cwd=directory, capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("--nexus-host must specify", result.stderr)
+
+
 class FakePhone:
     def __init__(self, client_id: str = "phone-1") -> None:
         self.authenticated = True
@@ -102,6 +129,70 @@ class FailingPhone(FakePhone):
 
 
 class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_metadata_only_cannot_confirm_saved_capture(self) -> None:
+        for use_root in (False, True):
+            with self.subTest(use_root=use_root), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                relay = Relay(
+                    token="test-token", event_log=EventLog(root / "events.jsonl"),
+                    write_nexus_sidecar=True, direction=PHONE_CONTROLS_NEXUS,
+                    nexus_session=None if use_root else root,
+                    nexus_roots=(root,) if use_root else (),
+                    file_timeout_seconds=0.2, file_poll_seconds=0.05,
+                    file_stable_polls=2,
+                )
+                relay.set_udp_transport(FakeDatagramTransport())  # type: ignore[arg-type]
+                phone = FakePhone()
+                relay.clients.add(phone)  # type: ignore[arg-type]
+                await relay._handle_capture_command(phone, {  # type: ignore[arg-type]
+                    "protocol": 1, "command_id": str(uuid.uuid4()),
+                    "action": "start", "trial_name": "MetadataOnly",
+                })
+                capture_id = relay.current_trial["capture_id"]
+                (root / "MetadataOnly.Trial.enf").write_bytes(b"metadata")
+                (root / "MetadataOnly.system").write_bytes(b"metadata")
+                await relay._handle_capture_command(phone, {  # type: ignore[arg-type]
+                    "protocol": 1, "command_id": str(uuid.uuid4()),
+                    "action": "stop", "capture_id": capture_id,
+                })
+                await asyncio.wait_for(relay.file_watch_task, timeout=1)
+                self.assertFalse((root / "MetadataOnly.opencap-sync.json").exists())
+                self.assertFalse(any(message.get("event") == "complete" for message in phone.messages))
+                self.assertTrue(any(message.get("state") == "failed" for message in phone.messages))
+
+    async def test_metadata_does_not_hide_raw_trial_in_another_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            preferred = root / "PreferredSession"
+            actual = root / "ActualSession"
+            preferred.mkdir()
+            actual.mkdir()
+            relay = Relay(
+                token="test-token", event_log=EventLog(root / "events.jsonl"),
+                write_nexus_sidecar=True, direction=PHONE_CONTROLS_NEXUS,
+                nexus_session=preferred, nexus_roots=(root,),
+                file_timeout_seconds=1, file_poll_seconds=0.05, file_stable_polls=2,
+            )
+            relay.set_udp_transport(FakeDatagramTransport())  # type: ignore[arg-type]
+            phone = FakePhone()
+            await relay._handle_capture_command(phone, {  # type: ignore[arg-type]
+                "protocol": 1, "command_id": str(uuid.uuid4()),
+                "action": "start", "trial_name": "RequestedName",
+            })
+            capture_id = relay.current_trial["capture_id"]
+            (preferred / "RequestedName.system").write_bytes(b"metadata only")
+            (actual / "RequestedName.Trial.enf").write_bytes(b"metadata only")
+            (actual / "ActualName.x2d").write_bytes(b"raw capture")
+            await relay._handle_capture_command(phone, {  # type: ignore[arg-type]
+                "protocol": 1, "command_id": str(uuid.uuid4()),
+                "action": "stop", "capture_id": capture_id,
+            })
+            await asyncio.wait_for(relay.file_watch_task, timeout=1)
+            self.assertEqual(relay.current_state, "idle")
+            self.assertEqual(relay.nexus_session, actual)
+            self.assertTrue((actual / "ActualName.opencap-sync.json").is_file())
+            self.assertFalse((preferred / "RequestedName.opencap-sync.json").exists())
+
     async def test_repeated_opencap_trial_name_gets_unique_nexus_name(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -199,7 +290,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
             (root / "P001_Biofeedback_01.x2d").write_bytes(b"raw-vicon-data")
             await asyncio.wait_for(relay.file_watch_task, timeout=1)
             self.assertEqual(relay.current_state, "idle")
-            self.assertTrue((root / "P001_Biofeedback_01.optigait-sync.json").is_file())
+            self.assertTrue((root / "P001_Biofeedback_01.opencap-sync.json").is_file())
 
     async def test_missing_nexus_files_times_out_without_claiming_complete(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -236,7 +327,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             await asyncio.wait_for(relay.file_watch_task, timeout=1)
             self.assertEqual(relay.current_state, "idle")
-            self.assertFalse((root / "NoFileTrial.optigait-sync.json").exists())
+            self.assertFalse((root / "NoFileTrial.opencap-sync.json").exists())
             records = [json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()]
             self.assertTrue(any(item["record_type"] == "capture_warning" for item in records))
             self.assertTrue(any(item["record_type"] == "capture_failure" for item in records))
@@ -286,7 +377,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
             (root / "NexusUIName.system").write_bytes(b"system")
             await asyncio.wait_for(relay.file_watch_task, timeout=1)
             self.assertEqual(relay.current_state, "idle")
-            sidecar = root / "NexusUIName.optigait-sync.json"
+            sidecar = root / "NexusUIName.opencap-sync.json"
             self.assertTrue(sidecar.is_file())
             document = json.loads(sidecar.read_text(encoding="utf-8"))
             self.assertEqual(document["trial"]["requested_name"], "PhoneRequestedName")
@@ -337,7 +428,7 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(relay.current_state, "idle")
             self.assertEqual(relay.nexus_session, active_session)
-            sidecar = active_session / "OpenCapTrial.optigait-sync.json"
+            sidecar = active_session / "OpenCapTrial.opencap-sync.json"
             self.assertTrue(sidecar.is_file())
             document = json.loads(sidecar.read_text(encoding="utf-8"))
             self.assertEqual(document["trial"]["database_path"], str(active_session))
@@ -627,10 +718,11 @@ class RelayIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 b'<CaptureComplete><Name VALUE="Walk 02"/><PacketID VALUE="201"/></CaptureComplete>\x00',
                 ("127.0.0.1", 51001),
             )
-            sidecar = root / "Walk_02.optigait-sync.json"
+            sidecar = root / "Walk_02.opencap-sync.json"
             self.assertTrue(sidecar.is_file())
             document = json.loads(sidecar.read_text(encoding="utf-8"))
             self.assertEqual([item["event"] for item in document["nexus_events"]], ["start", "complete"])
+            self.assertEqual(document["schema_version"], "opencap-vicon-sync-v1")
 
 
 if __name__ == "__main__":

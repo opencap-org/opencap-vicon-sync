@@ -1,13 +1,17 @@
 param(
-    [string]$PairingToken = "optigait-vicon-sync",
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('\A[A-Za-z0-9_-]+\z')]
+    [ValidateNotNullOrEmpty()]
+    [string]$PairingToken,
     [ValidateSet("auto", "nexus-controls-phone", "phone-controls-nexus")]
     [string]$Direction = "nexus-controls-phone",
-    [string]$NexusHost = "127.0.0.1",
+    [string]$NexusHost = "",
     [string]$NexusSession = "",
     [string[]]$NexusRoot = @(),
     [int]$NexusPort = 49150,
     [int]$PhonePort = 51002,
-    [int]$TriggerDelayMS = 250
+    [int]$TriggerDelayMS = 250,
+    [switch]$DisableDiscovery
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,13 +19,19 @@ $relayPath = Join-Path $PSScriptRoot "vicon_sync_relay.py"
 $arguments = @(
     $relayPath,
     '--direction', $Direction,
-    '--nexus-host', $NexusHost,
     '--nexus-port', $NexusPort,
     '--phone-port', $PhonePort,
     '--trigger-delay-ms', $TriggerDelayMS,
-    '--token', $PairingToken
+    "--token=$PairingToken"
 )
+if (-not [string]::IsNullOrWhiteSpace($NexusHost)) {
+    $arguments += @('--nexus-host', $NexusHost)
+}
+if ($DisableDiscovery) { $arguments += '--no-discovery' }
 if ($Direction -in @("auto", "phone-controls-nexus")) {
+    if ([string]::IsNullOrWhiteSpace($NexusHost)) {
+        throw "-NexusHost must specify this PC's Nexus adapter address when Direction is auto or phone-controls-nexus."
+    }
     if ([string]::IsNullOrWhiteSpace($NexusSession) -and $NexusRoot.Count -eq 0) {
         throw "-NexusSession or at least one -NexusRoot is required when Direction is auto or phone-controls-nexus."
     }
@@ -49,3 +59,4 @@ if ($Direction -in @("auto", "phone-controls-nexus")) {
     }
 }
 py -3 @arguments
+exit $LASTEXITCODE

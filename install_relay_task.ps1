@@ -1,20 +1,34 @@
 # Optional: install the relay as a per-user task that starts at Windows sign-in.
 param(
-    [string]$PairingToken = "optigait-vicon-sync",
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('\A[A-Za-z0-9_-]+\z')]
+    [ValidateNotNullOrEmpty()]
+    [string]$PairingToken,
     [ValidateSet("auto", "nexus-controls-phone", "phone-controls-nexus")]
     [string]$Direction = "nexus-controls-phone",
-    [string]$NexusHost = "127.0.0.1",
+    [string]$NexusHost = "",
     [string]$NexusSession = "",
     [string[]]$NexusRoot = @(),
     [int]$NexusPort = 49150,
     [int]$PhonePort = 51002,
-    [int]$TriggerDelayMS = 250
+    [int]$TriggerDelayMS = 250,
+    [switch]$DisableDiscovery
 )
 
 $ErrorActionPreference = "Stop"
 $taskName = "OpenCap Vicon Sync Relay"
-$legacyTaskName = "OptiGait Vicon Sync Relay"
-$pythonExecutable = (& py.exe -3 -c "import sys; print(sys.executable)").Trim()
+function ConvertTo-WindowsArgument([string]$Value) {
+    # Windows doubles backslashes before quotes, including a closing quote.
+    # This preserves paths with spaces and data roots ending in a backslash.
+    $escaped = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+    $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+    return '"' + $escaped + '"'
+}
+
+$pythonExecutable = ([string](& py.exe -3 -c "import sys; sys.exit('Python 3.10 or newer is required') if sys.version_info < (3, 10) else print(sys.executable)")).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($pythonExecutable)) {
+    throw "Python could not start. Install Python 3.10 or newer with the Windows py launcher."
+}
 $pythonWindowless = Join-Path (Split-Path -Parent $pythonExecutable) "pythonw.exe"
 if (Test-Path -LiteralPath $pythonWindowless -PathType Leaf) {
     $pythonLauncher = $pythonWindowless
@@ -25,6 +39,9 @@ if (Test-Path -LiteralPath $pythonWindowless -PathType Leaf) {
 }
 $relayPath = Join-Path $PSScriptRoot "vicon_sync_relay.py"
 $logPath = Join-Path $PSScriptRoot "vicon_sync_events.jsonl"
+if ($Direction -in @("auto", "phone-controls-nexus") -and [string]::IsNullOrWhiteSpace($NexusHost)) {
+    throw "-NexusHost must specify this PC's Nexus adapter address when Direction is auto or phone-controls-nexus."
+}
 if ($Direction -in @("auto", "phone-controls-nexus") -and [string]::IsNullOrWhiteSpace($NexusSession) -and $NexusRoot.Count -eq 0) {
     throw "-NexusSession or at least one -NexusRoot is required when Direction is auto or phone-controls-nexus."
 }
@@ -36,55 +53,58 @@ foreach ($root in $NexusRoot) {
         throw "Nexus data root is not accessible: $root"
     }
 }
+if (-not [string]::IsNullOrWhiteSpace($NexusSession)) {
+    $NexusSession = (Get-Item -LiteralPath $NexusSession).FullName
+}
+$NexusRoot = @($NexusRoot | ForEach-Object { (Get-Item -LiteralPath $_).FullName })
 $arguments = $pythonPrefixArguments + @(
-    ('"{0}"' -f $relayPath),
+    $relayPath,
     '--direction', $Direction,
-    '--nexus-host', ('"{0}"' -f $NexusHost),
     '--nexus-port', $NexusPort,
     '--phone-port', $PhonePort,
     '--trigger-delay-ms', $TriggerDelayMS,
-    '--token', ('"{0}"' -f $PairingToken),
-    '--log', ('"{0}"' -f $logPath)
+    "--token=$PairingToken",
+    '--log', $logPath
 )
+if (-not [string]::IsNullOrWhiteSpace($NexusHost)) {
+    $arguments += @('--nexus-host', $NexusHost)
+}
+if ($DisableDiscovery) { $arguments += '--no-discovery' }
 if (-not [string]::IsNullOrWhiteSpace($NexusSession)) {
-    $arguments += @('--nexus-session', ('"{0}"' -f $NexusSession))
+    $arguments += @('--nexus-session', $NexusSession)
 }
 foreach ($root in $NexusRoot) {
-    $arguments += @('--nexus-root', ('"{0}"' -f $root))
+    $arguments += @('--nexus-root', $root)
 }
-$arguments = $arguments -join ' '
+$arguments = ($arguments | ForEach-Object { ConvertTo-WindowsArgument ([string]$_) }) -join ' '
 
 # Updating a task's action does not replace an already-running instance. Stop
-# both the old task and any manually launched copy of this exact relay first,
-# otherwise the legacy process keeps ownership of TCP 51002 and the phone never
+# the task and any manually launched copy of this exact relay first,
+# otherwise the previous process keeps ownership of TCP 51002 and the phone never
 # receives the direction handshake.
-$managedTaskNames = @($taskName, $legacyTaskName)
-foreach ($managedTaskName in $managedTaskNames) {
-    $existingTask = Get-ScheduledTask -TaskName $managedTaskName -ErrorAction SilentlyContinue
-    if ($null -ne $existingTask) {
-        Stop-ScheduledTask -TaskName $managedTaskName -ErrorAction SilentlyContinue
-        for ($attempt = 0; $attempt -lt 20; $attempt++) {
-            $state = (Get-ScheduledTask -TaskName $managedTaskName -ErrorAction SilentlyContinue).State
-            if ($state -ne 'Running') { break }
-            Start-Sleep -Milliseconds 250
-        }
+$existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+if ($null -ne $existingTask) {
+    Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        $state = (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State
+        if ($state -ne 'Running') { break }
+        Start-Sleep -Milliseconds 250
     }
 }
 $relayProcesses = Get-CimInstance Win32_Process | Where-Object {
-    $_.CommandLine -and $_.CommandLine.Contains('vicon_sync_relay.py')
+    $_.CommandLine -and $_.CommandLine.IndexOf($relayPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
 }
 foreach ($process in $relayProcesses) {
     Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
-}
-if ($null -ne (Get-ScheduledTask -TaskName $legacyTaskName -ErrorAction SilentlyContinue)) {
-    Unregister-ScheduledTask -TaskName $legacyTaskName -Confirm:$false
 }
 
 $action = New-ScheduledTaskAction `
     -Execute $pythonLauncher `
     -Argument $arguments `
     -WorkingDirectory $PSScriptRoot
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$windowsUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $windowsUser
+$principal = New-ScheduledTaskPrincipal -UserId $windowsUser -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
@@ -96,6 +116,7 @@ Register-ScheduledTask `
     -TaskName $taskName `
     -Action $action `
     -Trigger $trigger `
+    -Principal $principal `
     -Settings $settings `
     -Description "Synchronizes Vicon Nexus and the OpenCap iPhone app ($Direction)." `
     -Force | Out-Null

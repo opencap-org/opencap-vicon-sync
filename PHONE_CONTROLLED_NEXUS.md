@@ -221,7 +221,7 @@ Receive mode before study use.
    configured Nexus session for the expected trial's raw files.
 6. The relay considers the Nexus trial complete only after the expected raw
    files exist and their sizes/timestamps remain stable across multiple polls.
-7. The relay writes `<trial>.optigait-sync.json` and sends a Complete message to
+7. The relay writes `<trial>.opencap-sync.json` and sends a Complete message to
    the phone. Post-capture pipelines and C3D generation may finish later and
    should have their own status if required.
 

@@ -6,10 +6,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ruleGroup = "OpenCap Vicon Sync"
-$legacyRuleGroup = "OptiGait Vicon Sync"
 
 Get-NetFirewallRule -Group $ruleGroup -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-Get-NetFirewallRule -Group $legacyRuleGroup -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 New-NetFirewallRule `
     -DisplayName "OpenCap Vicon UDP input" `
     -Group $ruleGroup `
@@ -27,4 +25,14 @@ New-NetFirewallRule `
     -LocalPort $PhonePort `
     -Profile Private
 
-Write-Host "Configured private-network firewall rules for UDP $NexusPort and TCP $PhonePort."
+New-NetFirewallRule `
+    -DisplayName "OpenCap relay discovery" `
+    -Group $ruleGroup `
+    -Direction Inbound `
+    -Action Allow `
+    -Protocol UDP `
+    -LocalPort 5353 `
+    -RemoteAddress LocalSubnet `
+    -Profile Private
+
+Write-Host "Configured private-network firewall rules for UDP $NexusPort, TCP $PhonePort, and Bonjour UDP 5353."

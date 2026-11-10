@@ -24,6 +24,8 @@ from pathlib import Path
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from relay_discovery import RelayAdvertisement
+
 
 PROTOCOL_VERSION = 1
 RELAY_VERSION = 2
@@ -31,7 +33,6 @@ RELAY_VERSION = 2
 # Keep the UDP relay port configurable, but use the highest accepted value by default.
 DEFAULT_NEXUS_PORT = 49150
 DEFAULT_PHONE_PORT = 51002
-DEFAULT_TOKEN = "optigait-vicon-sync"
 NEXUS_CONTROLS_PHONE = "nexus-controls-phone"
 PHONE_CONTROLS_NEXUS = "phone-controls-nexus"
 AUTO_DIRECTION = "auto"
@@ -113,6 +114,13 @@ def parse_nexus_packet(data: bytes) -> dict[str, Any]:
 def _safe_filename(value: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._")
     return cleaned[:120] or "vicon-trial"
+
+
+def pairing_token(value: str) -> str:
+    """Use a portable explicit token in Python and Windows task arguments."""
+    if re.fullmatch(r"[A-Za-z0-9_-]+", value) is None:
+        raise argparse.ArgumentTypeError("token must contain letters, numbers, '_' or '-'")
+    return value
 
 
 def validate_trial_name(value: Any) -> str:
@@ -1082,23 +1090,24 @@ class Relay:
             # Prefer the requested name when Nexus honors it. Otherwise select
             # the changed raw trial with the newest artifact. This also handles
             # Nexus auto-incrementing the name shown in its UI.
-            actual_name = name if name in groups else None
+            raw_groups = {
+                stem: paths for stem, paths in groups.items()
+                if self._contains_raw_nexus_data(paths)
+            }
+            actual_name = name if name in raw_groups else None
             if actual_name is None:
-                raw_groups = {
-                    stem: paths for stem, paths in groups.items()
-                    if self._contains_raw_nexus_data(paths)
-                }
                 if raw_groups:
                     actual_name = max(
                         raw_groups,
                         key=lambda stem: max(path.stat().st_mtime_ns for path in raw_groups[stem]),
                     )
             if actual_name is None and observed_directory is None and self.nexus_roots:
-                discovered = self._discover_recent_trial_groups()
-                requested = [item for item in discovered if item[1] == name]
-                candidates = requested or [
-                    item for item in discovered if self._contains_raw_nexus_data(item[2])
+                discovered = [
+                    item for item in self._discover_recent_trial_groups()
+                    if self._contains_raw_nexus_data(item[2])
                 ]
+                requested = [item for item in discovered if item[1] == name]
+                candidates = requested or discovered
                 if candidates:
                     observed_directory, actual_name, discovered_files = max(
                         candidates,
@@ -1134,7 +1143,10 @@ class Relay:
                 }
                 self.event_log.append({"record_type": "capture_warning", **warning})
                 await self._broadcast(warning)
-            if stable_count >= self.file_stable_polls - 1:
+            if (
+                stable_count >= self.file_stable_polls - 1
+                and self._contains_raw_nexus_data(files)
+            ):
                 await self._complete_phone_capture(actual_name or name, capture_id, files)
                 return
             previous = snapshot
@@ -1290,9 +1302,9 @@ class Relay:
         if not directory.is_dir():
             LOGGER.warning("Nexus sidecar directory does not exist: %s", directory)
             return
-        sidecar = directory / f"{_safe_filename(trial_name)}.optigait-sync.json"
+        sidecar = directory / f"{_safe_filename(trial_name)}.opencap-sync.json"
         document = {
-            "schema_version": "optigait-vicon-sync-v1",
+            "schema_version": "opencap-vicon-sync-v1",
             "written_unix_ns": time.time_ns(),
             "trial": self.current_trial,
             "nexus_events": self.trial_events,
@@ -1423,7 +1435,7 @@ async def run(args: argparse.Namespace) -> None:
         event_log=event_log,
         write_nexus_sidecar=args.write_nexus_sidecar,
         direction=initial_direction,
-        nexus_host=args.nexus_host,
+        nexus_host=args.nexus_host or "127.0.0.1",
         nexus_port=args.nexus_port,
         nexus_session=Path(args.nexus_session) if args.nexus_session else None,
         nexus_roots=tuple(Path(root) for root in args.nexus_root),
@@ -1436,6 +1448,9 @@ async def run(args: argparse.Namespace) -> None:
     await transport_manager.start(initial_direction)
     relay.set_direction_switcher(transport_manager.switch)
     server = await asyncio.start_server(relay.accept_client, args.tcp_host, args.phone_port)
+    advertisement = RelayAdvertisement(
+        args.tcp_host, server.sockets[0].getsockname()[1], enabled=args.discovery,
+    )
     addresses = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
     LOGGER.info("Listening for OpenCap TCP on %s", addresses)
     LOGGER.info("Control direction: %s (runtime %s)", args.direction, initial_direction)
@@ -1451,8 +1466,10 @@ async def run(args: argparse.Namespace) -> None:
             loop.add_signal_handler(signal_name, stop_event.set)
     try:
         async with server:
+            await advertisement.start()
             await stop_event.wait()
     finally:
+        await advertisement.close()
         transport_manager.close()
 
 
@@ -1465,7 +1482,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="Use auto to follow the authenticated phone while no capture is active",
     )
     parser.add_argument("--udp-host", default="0.0.0.0", help="Local address for Nexus UDP")
-    parser.add_argument("--nexus-host", default="127.0.0.1", help="Nexus Receive destination")
+    parser.add_argument("--nexus-host", help="PC adapter address; required for phone-controls-nexus or auto")
     parser.add_argument("--nexus-port", type=int, default=DEFAULT_NEXUS_PORT)
     parser.add_argument("--nexus-session", help="Optional preferred Nexus session directory")
     parser.add_argument(
@@ -1478,7 +1495,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--file-timeout-seconds", type=float, default=60.0)
     parser.add_argument("--tcp-host", default="0.0.0.0", help="Local address for phone TCP")
     parser.add_argument("--phone-port", type=int, default=DEFAULT_PHONE_PORT)
-    parser.add_argument("--token", default=DEFAULT_TOKEN, help="Shared phone pairing token; empty disables authentication")
+    parser.add_argument(
+        "--discovery", action=argparse.BooleanOptionalAction, default=True,
+        help="Advertise the relay using Bonjour; --no-discovery keeps manual IP connections only",
+    )
+    parser.add_argument("--token", required=True, type=pairing_token, help="Lab-specific phone pairing token")
     parser.add_argument(
         "--log",
         default=str(Path(__file__).with_name("vicon_sync_events.jsonl")),
@@ -1503,14 +1524,17 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--write-nexus-sidecar",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Write <trial>.optigait-sync.json after CaptureComplete",
+        help="Write <trial>.opencap-sync.json after CaptureComplete",
     )
     parser.add_argument("--verbose", action="store_true")
     return parser
 
 
 def main() -> int:
-    args = build_argument_parser().parse_args()
+    parser = build_argument_parser()
+    args = parser.parse_args()
+    if args.direction in {PHONE_CONTROLS_NEXUS, AUTO_DIRECTION} and not args.nexus_host:
+        parser.error("--nexus-host must specify the PC's Nexus adapter address for phone-controls-nexus or auto")
     handlers: list[logging.Handler] = [
         logging.FileHandler(args.runtime_log, encoding="utf-8"),
     ]

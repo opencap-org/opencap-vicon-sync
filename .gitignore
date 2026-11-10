@@ -10,4 +10,4 @@ vicon_sync_relay.log
 relay_runtime*.log
 
 # Generated trial sidecars
-*.optigait-sync.json
+*.opencap-sync.json
