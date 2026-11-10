@@ -1421,7 +1421,7 @@ async def run(args: argparse.Namespace) -> None:
     event_log = EventLog(Path(args.log))
     initial_direction = args.direction
     if args.direction == AUTO_DIRECTION:
-        initial_direction = PHONE_CONTROLS_NEXUS
+        initial_direction = NEXUS_CONTROLS_PHONE
         try:
             saved_direction = Path(args.direction_state_file).read_text(encoding="utf-8").strip()
             if saved_direction in {NEXUS_CONTROLS_PHONE, PHONE_CONTROLS_NEXUS}:
