@@ -33,6 +33,7 @@ RELAY_VERSION = 2
 # Keep the UDP relay port configurable, but use the highest accepted value by default.
 DEFAULT_NEXUS_PORT = 49150
 DEFAULT_PHONE_PORT = 51002
+DEFAULT_PAIRING_TOKEN = "opencap"
 NEXUS_CONTROLS_PHONE = "nexus-controls-phone"
 PHONE_CONTROLS_NEXUS = "phone-controls-nexus"
 AUTO_DIRECTION = "auto"
@@ -117,7 +118,7 @@ def _safe_filename(value: str) -> str:
 
 
 def pairing_token(value: str) -> str:
-    """Use a portable explicit token in Python and Windows task arguments."""
+    """Use a portable token in Python and Windows task arguments."""
     if re.fullmatch(r"[A-Za-z0-9_-]+", value) is None:
         raise argparse.ArgumentTypeError("token must contain letters, numbers, '_' or '-'")
     return value
@@ -1499,7 +1500,10 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--discovery", action=argparse.BooleanOptionalAction, default=True,
         help="Advertise the relay using Bonjour; --no-discovery keeps manual IP connections only",
     )
-    parser.add_argument("--token", required=True, type=pairing_token, help="Lab-specific phone pairing token")
+    parser.add_argument(
+        "--token", default=DEFAULT_PAIRING_TOKEN, type=pairing_token,
+        help="Phone pairing token (default: opencap)",
+    )
     parser.add_argument(
         "--log",
         default=str(Path(__file__).with_name("vicon_sync_events.jsonl")),

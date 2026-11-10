@@ -1,10 +1,9 @@
 param(
     [string]$RelayHost = "127.0.0.1",
     [int]$PhonePort = 51002,
-    [Parameter(Mandatory = $true)]
     [ValidatePattern('\A[A-Za-z0-9_-]+\z')]
     [ValidateNotNullOrEmpty()]
-    [string]$PairingToken,
+    [string]$PairingToken = "opencap",
     [ValidateSet("", "nexus-controls-phone", "phone-controls-nexus")]
     [string]$RequestedDirection = "",
     [int]$TimeoutMilliseconds = 3000

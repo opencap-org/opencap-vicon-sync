@@ -1,9 +1,8 @@
 # Optional: install the relay as a per-user task that starts at Windows sign-in.
 param(
-    [Parameter(Mandatory = $true)]
     [ValidatePattern('\A[A-Za-z0-9_-]+\z')]
     [ValidateNotNullOrEmpty()]
-    [string]$PairingToken,
+    [string]$PairingToken = "opencap",
     [ValidateSet("auto", "nexus-controls-phone", "phone-controls-nexus")]
     [string]$Direction = "nexus-controls-phone",
     [string]$NexusHost = "",

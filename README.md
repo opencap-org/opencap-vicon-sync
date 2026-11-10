@@ -36,12 +36,13 @@ values, then keep this PowerShell window open:
 ```powershell
 $pcAddress = "192.168.137.1"    # Replace with this PC's capture-network address
 $nexusDataRoot = "D:\ViconData" # Replace with the folder containing Nexus sessions
-$relayToken = py -3 -c "import secrets; print(secrets.token_urlsafe(24))"
-$relayToken
+$relayToken = "opencap"         # Default pairing token; enter this on the iPhone
 ```
 
-Copy the generated token into the iPhone settings in step 3 and keep it for
-future launches. Tokens use letters, numbers, underscores, and hyphens.
+The default pairing token is **`opencap`** in the relay, startup task, and
+diagnostic script. Enter **`opencap`** in the iPhone's Vicon Sync settings too.
+You can omit `-PairingToken` to use this default, or set `$relayToken` to a custom
+value for both the PC and phones. Tokens use letters, numbers, underscores, and hyphens.
 `192.168.137.1` is an example hotspot address; **check each lab's PC**. Use the
 PC's adapter address, not `127.0.0.1`, for Nexus Receive commands.
 
@@ -100,7 +101,7 @@ reconnects do not change the shared direction automatically.
 2. Join and prepare your normal OpenCap capture session.
 3. Open **Info (ⓘ) → Vicon Sync**. This entry is available on any network.
 4. Enable **Vicon sync**, select the direction from the table, and enter the
-   **same pairing token** used on Windows.
+   pairing token **`opencap`** (or the custom token configured on Windows).
 5. Leave **Find relay automatically** enabled, or tap **Find relay on Wi-Fi**.
    Select the intended PC if several appear. If discovery fails, enter the PC's
    IPv4 address manually and use TCP port **`51002`**.
@@ -150,6 +151,10 @@ To update, run `git pull`, reinstall `requirements.txt`, rerun the firewall
 script if rules changed, and repeat the task installation command. Restart the
 relay after changing the PC's capture-network address. Keep the whole repository
 folder together and writable: the relay stores its logs and state there.
+
+An already running relay or installed startup task keeps its previous token.
+To switch it to `opencap`, restart the relay or rerun the task installation
+command with `-PairingToken opencap`.
 
 To uninstall the task:
 

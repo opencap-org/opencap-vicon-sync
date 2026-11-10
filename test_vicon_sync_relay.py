@@ -15,6 +15,7 @@ from vicon_sync_relay import (
     EventLog,
     PersistentPacketIDs,
     Relay,
+    build_argument_parser,
     parse_nexus_packet,
     serialize_nexus_command,
 )
@@ -87,9 +88,14 @@ class FakeDatagramTransport:
 
 
 class RelayCommandLineTests(unittest.TestCase):
-    def test_startup_requires_an_explicit_portable_pairing_token(self) -> None:
+    def test_pairing_token_defaults_to_opencap_and_can_be_overridden(self) -> None:
+        parser = build_argument_parser()
+        self.assertEqual(parser.parse_args([]).token, "opencap")
+        self.assertEqual(parser.parse_args(["--token", "custom-lab_token"]).token, "custom-lab_token")
+
+    def test_startup_rejects_invalid_explicit_pairing_tokens(self) -> None:
         script = Path(__file__).with_name("vicon_sync_relay.py")
-        for arguments in ([], ["--token", ""], ["--token", 'bad"token'], ["--token", "two words"]):
+        for arguments in (["--token", ""], ["--token", 'bad"token'], ["--token", "two words"]):
             with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as directory:
                 result = subprocess.run(
                     [sys.executable, str(script), *arguments], cwd=directory,

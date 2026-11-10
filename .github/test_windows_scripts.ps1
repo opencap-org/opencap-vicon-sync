@@ -12,6 +12,21 @@ foreach ($file in Get-ChildItem -LiteralPath $repositoryRoot -Filter '*.ps1') {
     }
 }
 
+# All Windows entry points should pair with the default iPhone token.
+foreach ($name in @('start_relay.ps1', 'install_relay_task.ps1', 'diagnose_relay.ps1')) {
+    $tokens = $null
+    $parseErrors = $null
+    $script = [System.Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $repositoryRoot $name), [ref]$tokens, [ref]$parseErrors
+    )
+    $parameter = $script.ParamBlock.Parameters | Where-Object {
+        $_.Name.VariablePath.UserPath -eq 'PairingToken'
+    }
+    if ($null -eq $parameter -or $parameter.DefaultValue.SafeGetValue() -cne 'opencap') {
+        throw "Incorrect default pairing token in $name"
+    }
+}
+
 # Load only the quoting function; do not execute the installer.
 $tokens = $null
 $parseErrors = $null
