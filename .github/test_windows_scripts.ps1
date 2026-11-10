@@ -46,7 +46,9 @@ try {
     }
     $output = $process.StandardOutput.ReadToEnd()
     if ($process.ExitCode -ne 0) { throw $process.StandardError.ReadToEnd() }
-    $actual = @($output | ConvertFrom-Json)
+    # Windows PowerShell 5.1 returns the JSON array as one pipeline object.
+    # Direct assignment preserves that array without adding an outer array.
+    $actual = $output | ConvertFrom-Json
     if ($actual.Count -ne $expected.Count) { throw "Incorrect argv count: $output" }
     for ($index = 0; $index -lt $expected.Count; $index++) {
         if ($actual[$index] -cne $expected[$index]) {
